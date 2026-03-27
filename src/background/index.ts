@@ -1,133 +1,66 @@
 /**
- * Background Service Worker
- * Handles extension lifecycle, messaging, and background tasks
+ * CRO Audit Extension — Background Service Worker
  */
 
 import { createMessageHandler } from "@/lib/messaging";
 import {
-  getStorage,
-  setStorage,
   initializeStorage,
-  defaultSettings,
+  getExtensionId,
+  getRemainingAudits,
+  recordLocalUse,
+  addAuditToHistory,
 } from "@/lib/storage";
+import { runAudit } from "@/lib/api";
 
-console.log("[Background] Service worker started");
+console.log("[CRO] Service worker started");
 
-// Handle extension installation
+// Generate UUID on first install
 chrome.runtime.onInstalled.addListener(async (details) => {
-  console.log("[Background] Extension installed:", details.reason);
-
   if (details.reason === chrome.runtime.OnInstalledReason.INSTALL) {
-    // First-time installation
     await initializeStorage();
-    console.log("[Background] Storage initialized with defaults");
-
-    // Optional: Open welcome/onboarding page
-    // chrome.tabs.create({ url: chrome.runtime.getURL("src/options/options.html") });
-  }
-
-  if (details.reason === chrome.runtime.OnInstalledReason.UPDATE) {
-    // Extension updated
-    console.log(
-      "[Background] Extension updated from version:",
-      details.previousVersion
-    );
+    console.log("[CRO] Extension installed, ID generated");
   }
 });
 
-// Handle extension startup (browser restart, etc.)
 chrome.runtime.onStartup.addListener(async () => {
-  console.log("[Background] Extension started");
   await initializeStorage();
 });
 
-// Set up message handlers
+// Message handlers
 createMessageHandler({
-  GET_TAB_INFO: async (_payload, sender) => {
-    const tab = sender.tab;
-    return {
-      url: tab?.url ?? "",
-      title: tab?.title ?? "",
-    };
-  },
-
-  GET_SETTINGS: async () => {
-    const settings = await getStorage("settings");
-    return settings ?? defaultSettings;
-  },
-
-  UPDATE_SETTINGS: async (payload) => {
-    const currentSettings = (await getStorage("settings")) ?? defaultSettings;
-    const newSettings = { ...currentSettings, ...payload };
-    await setStorage("settings", newSettings);
-    return { success: true };
-  },
-
-  TOGGLE_EXTENSION: async (payload) => {
-    const currentSettings = (await getStorage("settings")) ?? defaultSettings;
-    await setStorage("settings", { ...currentSettings, enabled: payload.enabled });
-
-    // Notify all tabs about the state change
-    const tabs = await chrome.tabs.query({});
-    for (const tab of tabs) {
-      if (tab.id) {
-        try {
-          await chrome.tabs.sendMessage(tab.id, {
-            type: "EXTENSION_STATE_CHANGED",
-            payload: { enabled: payload.enabled },
-          });
-        } catch {
-          // Tab might not have content script loaded
-        }
-      }
+  RUN_AUDIT: async (payload) => {
+    const extensionId = await getExtensionId();
+    if (!extensionId) {
+      throw new Error("Extension not initialized. Try reinstalling.");
     }
 
-    return { success: true };
-  },
+    // Client-side guard (server is the authority)
+    const usage = await getRemainingAudits();
+    if (usage.remaining <= 0) {
+      throw new Error("You've used all your audits for today. Come back tomorrow!");
+    }
 
-  CONTENT_ACTION: async (payload) => {
-    console.log("[Background] Content action received:", payload);
-    return { success: true, result: payload.data };
-  },
-});
-
-// Context menu setup
-chrome.runtime.onInstalled.addListener(() => {
-  // Remove existing menus first (best practice)
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: "extension-action",
-      title: "Extension Action",
-      contexts: ["page", "selection"],
+    // Call the API
+    const { result, remaining } = await runAudit(extensionId, {
+      websiteUrl: payload.url,
+      conversionGoal: payload.conversionGoal,
+      businessType: payload.businessType,
     });
-  });
+
+    // Record locally
+    await recordLocalUse();
+    await addAuditToHistory({
+      url: payload.url,
+      overallScore: result.overallScore,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { result, remaining };
+  },
+
+  GET_USAGE: async () => {
+    return getRemainingAudits();
+  },
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "extension-action") {
-    console.log("[Background] Context menu clicked:", info, tab);
-    // Handle context menu action
-  }
-});
-
-// Handle tab updates (optional)
-chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
-  if (changeInfo.status === "complete" && tab.url) {
-    const settings = await getStorage("settings");
-    if (settings?.enabled) {
-      // Perform action when tab loads
-      console.log("[Background] Tab loaded:", tab.url);
-    }
-  }
-});
-
-// Keep service worker alive for long-running tasks (use sparingly)
-// chrome.alarms.create("keepAlive", { periodInMinutes: 0.5 });
-// chrome.alarms.onAlarm.addListener((alarm) => {
-//   if (alarm.name === "keepAlive") {
-//     console.log("[Background] Keep alive alarm");
-//   }
-// });
-
-// Export for type checking
 export {};

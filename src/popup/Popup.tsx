@@ -1,198 +1,292 @@
 import { useState, useEffect } from "react";
-import { sendToBackground, sendToActiveTab } from "@/lib/messaging";
+import { sendToBackground } from "@/lib/messaging";
+import type { AuditResult } from "@/lib/messaging";
 
-interface Settings {
-  enabled: boolean;
-  theme: "light" | "dark" | "system";
-  notifications: boolean;
-}
+type ViewState = "idle" | "loading" | "results" | "error";
 
-interface TabInfo {
-  url: string;
-  title: string;
-}
+const GOALS = [
+  "Lead generation",
+  "E-commerce sales",
+  "SaaS signup",
+  "Newsletter signup",
+  "Appointment booking",
+  "Phone calls",
+];
+
+const TYPES = [
+  "Professional services",
+  "E-commerce",
+  "SaaS",
+  "Agency",
+  "Local business",
+  "Other",
+];
 
 export function Popup() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [tabInfo, setTabInfo] = useState<TabInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [actionResult, setActionResult] = useState<string>("");
+  const [view, setView] = useState<ViewState>("idle");
+  const [tabUrl, setTabUrl] = useState("");
+  const [conversionGoal, setConversionGoal] = useState("Lead generation");
+  const [businessType, setBusinessType] = useState("Professional services");
+  const [results, setResults] = useState<AuditResult | null>(null);
+  const [error, setError] = useState("");
+  const [remaining, setRemaining] = useState<number | null>(null);
 
   useEffect(() => {
-    loadData();
+    loadInitialData();
   }, []);
 
-  async function loadData() {
-    setLoading(true);
-    try {
-      // Get settings
-      const settingsResponse = await sendToBackground("GET_SETTINGS", undefined);
-      if (settingsResponse.success && settingsResponse.data) {
-        setSettings(settingsResponse.data);
-      }
+  async function loadInitialData() {
+    // Get current tab URL
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.url) setTabUrl(tab.url);
 
-      // Get current tab info
-      const [tab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      if (tab) {
-        setTabInfo({
-          url: tab.url ?? "",
-          title: tab.title ?? "",
-        });
-      }
-    } catch (error) {
-      console.error("Failed to load data:", error);
-    } finally {
-      setLoading(false);
+    // Get remaining audits
+    const usageRes = await sendToBackground("GET_USAGE", undefined as void);
+    if (usageRes.success && usageRes.data) {
+      setRemaining(usageRes.data.remaining);
     }
   }
 
-  async function toggleEnabled() {
-    if (!settings) return;
+  async function runAudit() {
+    if (!tabUrl) return;
+    setView("loading");
+    setError("");
 
-    const newEnabled = !settings.enabled;
-    const response = await sendToBackground("TOGGLE_EXTENSION", {
-      enabled: newEnabled,
+    const res = await sendToBackground("RUN_AUDIT", {
+      url: tabUrl,
+      conversionGoal,
+      businessType,
     });
 
-    if (response.success) {
-      setSettings({ ...settings, enabled: newEnabled });
-    }
-  }
-
-  async function handleAction(action: string) {
-    setActionResult("");
-
-    const response = await sendToActiveTab("CONTENT_ACTION", {
-      action,
-      data: { timestamp: Date.now() },
-    });
-
-    if (response.success) {
-      setActionResult(`Action "${action}" completed!`);
+    if (res.success && res.data) {
+      setResults(res.data.result);
+      setRemaining(res.data.remaining);
+      setView("results");
     } else {
-      setActionResult(`Error: ${response.error}`);
+      setError(res.error || "Something went wrong");
+      setView("error");
     }
-
-    // Clear result after 3 seconds
-    setTimeout(() => setActionResult(""), 3000);
   }
 
-  function openOptions() {
-    chrome.runtime.openOptionsPage();
+  function scoreColor(score: number): string {
+    if (score >= 7) return "text-green-600";
+    if (score >= 5) return "text-amber-500";
+    return "text-red-500";
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center p-8">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-      </div>
-    );
+  function scoreBg(score: number): string {
+    if (score >= 7) return "bg-green-500";
+    if (score >= 5) return "bg-amber-400";
+    return "bg-red-500";
   }
+
+  function scoreRingColor(score: number): string {
+    if (score >= 7) return "border-green-500";
+    if (score >= 5) return "border-amber-400";
+    return "border-red-500";
+  }
+
+  const statusIcon = (status: string) => {
+    if (status === "good") return <span className="text-green-500">&#10003;</span>;
+    if (status === "warning") return <span className="text-amber-500">&#9888;</span>;
+    return <span className="text-red-500">&#10005;</span>;
+  };
 
   return (
-    <div className="p-4 bg-white animate-fade-in">
+    <div className="bg-white">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-lg font-semibold text-gray-900">
-          Chrome Extension
-        </h1>
-        <button
-          onClick={openOptions}
-          className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-          title="Settings"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-            />
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-            />
-          </svg>
-        </button>
+      <div className="bg-slate-900 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <img src={chrome.runtime.getURL("public/icons/icon-32.png")} alt="Optimise Digital" className="w-6 h-6" />
+          <span className="text-white text-sm font-semibold">CRO Audit</span>
+        </div>
+        {remaining !== null && (
+          <span className="text-[10px] text-slate-400">
+            {remaining} audit{remaining !== 1 ? "s" : ""} left today
+          </span>
+        )}
       </div>
 
-      {/* Current Tab Info */}
-      {tabInfo && (
-        <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-          <p className="text-xs text-gray-500 mb-1">Current Page</p>
-          <p className="text-sm font-medium text-gray-900 truncate">
-            {tabInfo.title || "Untitled"}
-          </p>
-          <p className="text-xs text-gray-500 truncate">{tabInfo.url}</p>
+      {/* Idle view */}
+      {view === "idle" && (
+        <div className="p-4 space-y-3">
+          {/* Current URL */}
+          <div className="bg-slate-50 rounded-lg p-2.5">
+            <p className="text-[10px] text-slate-400 mb-0.5">Current page</p>
+            <p className="text-xs text-slate-700 truncate">{tabUrl || "No URL detected"}</p>
+          </div>
+
+          {/* Conversion goal */}
+          <div>
+            <label className="text-[10px] text-slate-500 block mb-1">Conversion goal</label>
+            <select
+              value={conversionGoal}
+              onChange={(e) => setConversionGoal(e.target.value)}
+              className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-orange-400"
+            >
+              {GOALS.map((g) => <option key={g} value={g}>{g}</option>)}
+            </select>
+          </div>
+
+          {/* Business type */}
+          <div>
+            <label className="text-[10px] text-slate-500 block mb-1">Business type</label>
+            <select
+              value={businessType}
+              onChange={(e) => setBusinessType(e.target.value)}
+              className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-orange-400"
+            >
+              {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+
+          {/* Run button */}
+          <button
+            onClick={runAudit}
+            disabled={!tabUrl || remaining === 0}
+            className="w-full py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {remaining === 0 ? "No audits remaining today" : "Run CRO Audit"}
+          </button>
+
+          {/* Usage note */}
+          <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+            <p className="text-[10px] text-blue-700">
+              {remaining === 0
+                ? "You've used your 2 free audits for today. Come back tomorrow!"
+                : remaining !== null
+                  ? `You have ${remaining} free audit${remaining !== 1 ? "s" : ""} remaining today. You get 2 audits per day.`
+                  : "Loading usage..."}
+            </p>
+          </div>
         </div>
       )}
 
-      {/* Toggle Switch */}
-      <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg mb-4">
-        <span className="text-sm font-medium text-gray-700">
-          Extension Enabled
-        </span>
-        <button
-          onClick={toggleEnabled}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-            settings?.enabled ? "bg-primary-600" : "bg-gray-300"
-          }`}
-        >
-          <span
-            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-              settings?.enabled ? "translate-x-6" : "translate-x-1"
-            }`}
-          />
-        </button>
-      </div>
+      {/* Loading view */}
+      {view === "loading" && (
+        <div className="p-8 flex flex-col items-center justify-center gap-3">
+          <div className="animate-spin rounded-full h-10 w-10 border-[3px] border-slate-200 border-t-orange-500"></div>
+          <p className="text-sm text-slate-600">Analysing page...</p>
+          <p className="text-[10px] text-slate-400">This usually takes 5-10 seconds</p>
+        </div>
+      )}
 
-      {/* Action Buttons */}
-      <div className="space-y-2">
-        <button
-          onClick={() => handleAction("highlight")}
-          disabled={!settings?.enabled}
-          className="w-full px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          Highlight Page
-        </button>
-        <button
-          onClick={() => handleAction("inject")}
-          disabled={!settings?.enabled}
-          className="w-full px-4 py-2 text-sm font-medium text-primary-700 bg-primary-50 rounded-lg hover:bg-primary-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          Inject Widget
-        </button>
-        <button
-          onClick={() => handleAction("getData")}
-          disabled={!settings?.enabled}
-          className="w-full px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          Get Page Data
-        </button>
-      </div>
+      {/* Results view */}
+      {view === "results" && results && (
+        <div className="p-4 space-y-4">
+          {/* Overall score */}
+          <div className="flex items-center gap-4">
+            <div className={`w-16 h-16 rounded-full border-4 ${scoreRingColor(results.overallScore)} flex items-center justify-center flex-shrink-0`}>
+              <span className={`text-2xl font-bold ${scoreColor(results.overallScore)}`}>
+                {results.overallScore.toFixed(1)}
+              </span>
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-900">Overall CRO Score</p>
+              <p className="text-[10px] text-slate-400 truncate max-w-[240px]">{results.websiteUrl}</p>
+            </div>
+          </div>
 
-      {/* Action Result */}
-      {actionResult && (
-        <div className="mt-3 p-2 text-sm text-center text-green-700 bg-green-50 rounded-lg animate-slide-up">
-          {actionResult}
+          {/* Category scores */}
+          <div className="space-y-2">
+            {[
+              { label: "First Impression", score: results.firstImpressionScore },
+              { label: "Trust & Social Proof", score: results.trustSocialProofScore },
+              { label: "Call-to-Actions", score: results.ctaScore },
+              { label: "Lead Capture", score: results.leadCaptureScore },
+              { label: "Content & Readability", score: results.contentReadabilityScore },
+              { label: "Navigation", score: results.navigationScore },
+            ].map(({ label, score }) => (
+              <div key={label} className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-500 w-[120px] flex-shrink-0">{label}</span>
+                <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${scoreBg(score)}`}
+                    style={{ width: `${score * 10}%` }}
+                  />
+                </div>
+                <span className={`text-[11px] font-semibold w-6 text-right ${scoreColor(score)}`}>
+                  {score.toFixed(1)}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Key findings */}
+          {results.findings && results.findings.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-700 mb-2">Key Findings</p>
+              <div className="space-y-1.5 max-h-[120px] overflow-y-auto">
+                {results.findings.slice(0, 8).map((f, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-[10px]">
+                    <span className="flex-shrink-0 mt-0.5">{statusIcon(f.status)}</span>
+                    <span className="text-slate-600">{f.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Top recommendations */}
+          {results.recommendations && results.recommendations.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-700 mb-2">Top Recommendations</p>
+              <div className="space-y-2">
+                {results.recommendations.slice(0, 3).map((r, i) => (
+                  <div key={i} className="bg-orange-50 border border-orange-100 rounded-lg p-2">
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-[9px] font-bold text-orange-600 bg-orange-100 px-1.5 py-0.5 rounded">
+                        #{r.priority}
+                      </span>
+                      <span className="text-[10px] font-semibold text-slate-800">{r.title}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 line-clamp-2">{r.description}</p>
+                    {r.estimatedLift && (
+                      <p className="text-[9px] text-green-600 mt-0.5">Est. lift: {r.estimatedLift}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Run another */}
+          <button
+            onClick={() => { setView("idle"); setResults(null); }}
+            className="w-full py-2 text-xs font-medium text-orange-600 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors"
+          >
+            Run Another Audit
+          </button>
+        </div>
+      )}
+
+      {/* Error view */}
+      {view === "error" && (
+        <div className="p-6 flex flex-col items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center">
+            <span className="text-red-500 text-xl">!</span>
+          </div>
+          <p className="text-sm text-slate-700 text-center">{error}</p>
+          <button
+            onClick={() => setView("idle")}
+            className="px-4 py-2 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+          >
+            Try Again
+          </button>
         </div>
       )}
 
       {/* Footer */}
-      <div className="mt-4 pt-3 border-t border-gray-100">
-        <p className="text-xs text-center text-gray-400">
-          Version {chrome.runtime.getManifest().version}
-        </p>
+      <div className="px-4 py-2 border-t border-slate-100 flex items-center justify-between">
+        <a
+          href="https://www.optimisedigital.online"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[9px] text-slate-400 hover:text-orange-500 transition-colors"
+        >
+          Powered by Optimise Digital
+        </a>
+        <span className="text-[9px] text-slate-300">v{chrome.runtime.getManifest().version}</span>
       </div>
     </div>
   );

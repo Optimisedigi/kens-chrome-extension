@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Chrome Extension Boilerplate",
+  "name": "CRO Audit by Optimise Digital",
   "version": "1.0.0",
-  "description": "A production-ready Chrome extension boilerplate with TypeScript and React",
+  "description": "One-click conversion rate audit for any webpage. See what's helping and hurting your conversions.",
   "icons": {
     "16": "public/icons/icon-16.png",
     "32": "public/icons/icon-32.png",
@@ -17,36 +17,18 @@
       "48": "public/icons/icon-48.png",
       "128": "public/icons/icon-128.png"
     },
-    "default_title": "Chrome Extension Boilerplate"
-  },
-  "options_ui": {
-    "page": "src/options/options.html",
-    "open_in_tab": true
+    "default_title": "CRO Audit by Optimise Digital"
   },
   "background": {
     "service_worker": "src/background/index.ts",
     "type": "module"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["src/content/index.ts"],
-      "run_at": "document_idle"
-    }
-  ],
   "permissions": [
     "storage",
-    "activeTab",
-    "scripting",
-    "contextMenus"
+    "activeTab"
   ],
   "host_permissions": [
-    "<all_urls>"
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["public/*"],
-      "matches": ["<all_urls>"]
-    }
+    "https://www.optimisedigital.online/*",
+    "https://website-growth-tools-production.up.railway.app/*"
   ]
 }

@@ -1,170 +1,96 @@
 /**
- * Type-safe Chrome storage utilities
- * Supports both local and sync storage with automatic serialization
- *
- * EXTENDING STORAGE:
- * 1. Add new keys to StorageSchema interface
- * 2. Add default values to defaultStorage object
- * 3. Use getStorage/setStorage with your new keys (fully type-safe)
- *
- * Example:
- *   interface StorageSchema {
- *     myFeature: { enabled: boolean; count: number };
- *   }
- *   const data = await getStorage("myFeature"); // typed!
+ * CRO Audit Extension — Chrome storage utilities
  */
 
-export interface StorageSchema {
-  // Extension settings - add your settings here
-  settings: {
-    enabled: boolean;
-    theme: "light" | "dark" | "system";
-    notifications: boolean;
-  };
-  // User data - add user-specific data here
-  userData: {
-    lastVisit: number;
-    visitCount: number;
-  };
-  // Add more storage keys here as needed:
-  // myFeature: { ... };
+export interface AuditHistoryEntry {
+  url: string;
+  overallScore: number;
+  timestamp: string;
 }
 
-type StorageKey = keyof StorageSchema;
-type StorageValue<K extends StorageKey> = StorageSchema[K];
-
-/**
- * Get a value from chrome.storage.local
- * Returns undefined if key doesn't exist or on error
- */
-export async function getStorage<K extends StorageKey>(
-  key: K
-): Promise<StorageValue<K> | undefined> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(key, (result) => {
-      if (chrome.runtime.lastError) {
-        console.error("[Storage] Get error:", chrome.runtime.lastError.message);
-        resolve(undefined);
-        return;
-      }
-      resolve(result[key] as StorageValue<K> | undefined);
-    });
-  });
+export interface DailyUsage {
+  date: string;         // YYYY-MM-DD
+  count: number;
+  firstEverDate: string; // date of first-ever use
 }
 
-/**
- * Set a value in chrome.storage.local
- * Returns true on success, false on error
- */
-export async function setStorage<K extends StorageKey>(
-  key: K,
-  value: StorageValue<K>
-): Promise<boolean> {
-  return new Promise((resolve) => {
-    chrome.storage.local.set({ [key]: value }, () => {
-      if (chrome.runtime.lastError) {
-        console.error("[Storage] Set error:", chrome.runtime.lastError.message);
-        resolve(false);
-        return;
-      }
-      resolve(true);
-    });
-  });
+// ── Extension ID (sync storage — persists across devices) ──
+
+export async function getExtensionId(): Promise<string> {
+  const result = await chrome.storage.sync.get("extensionId");
+  return result.extensionId || "";
 }
 
-/**
- * Remove a value from chrome.storage.local
- */
-export async function removeStorage<K extends StorageKey>(
-  key: K
-): Promise<boolean> {
-  return new Promise((resolve) => {
-    chrome.storage.local.remove(key, () => {
-      if (chrome.runtime.lastError) {
-        console.error("[Storage] Remove error:", chrome.runtime.lastError.message);
-        resolve(false);
-        return;
-      }
-      resolve(true);
-    });
-  });
+export async function setExtensionId(id: string): Promise<void> {
+  await chrome.storage.sync.set({ extensionId: id });
 }
 
-/**
- * Get all storage data
- */
-export async function getAllStorage(): Promise<Partial<StorageSchema>> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(null, (result) => {
-      if (chrome.runtime.lastError) {
-        console.error("[Storage] GetAll error:", chrome.runtime.lastError.message);
-        resolve({});
-        return;
-      }
-      resolve(result as Partial<StorageSchema>);
-    });
-  });
+// ── Audit History (local storage) ──
+
+export async function getAuditHistory(): Promise<AuditHistoryEntry[]> {
+  const result = await chrome.storage.local.get("auditHistory");
+  return result.auditHistory || [];
 }
 
-/**
- * Clear all storage data
- */
-export async function clearStorage(): Promise<boolean> {
-  return new Promise((resolve) => {
-    chrome.storage.local.clear(() => {
-      if (chrome.runtime.lastError) {
-        console.error("[Storage] Clear error:", chrome.runtime.lastError.message);
-        resolve(false);
-        return;
-      }
-      resolve(true);
-    });
-  });
+export async function addAuditToHistory(entry: AuditHistoryEntry): Promise<void> {
+  const history = await getAuditHistory();
+  history.unshift(entry);
+  await chrome.storage.local.set({ auditHistory: history.slice(0, 10) });
 }
 
-/**
- * Listen for storage changes
- * Returns unsubscribe function
- */
-export function onStorageChange(
-  callback: (
-    changes: { [key: string]: chrome.storage.StorageChange },
-    areaName: string
-  ) => void
-): () => void {
-  chrome.storage.onChanged.addListener(callback);
-  return () => chrome.storage.onChanged.removeListener(callback);
+// ── Daily Usage (local storage) ──
+
+export async function getDailyUsage(): Promise<DailyUsage> {
+  const result = await chrome.storage.local.get("dailyUsage");
+  return result.dailyUsage || { date: "", count: 0, firstEverDate: "" };
 }
 
-/**
- * Default settings - customize these for your extension
- */
-export const defaultSettings: StorageSchema["settings"] = {
-  enabled: true,
-  theme: "system",
-  notifications: true,
-};
+export async function setDailyUsage(usage: DailyUsage): Promise<void> {
+  await chrome.storage.local.set({ dailyUsage: usage });
+}
 
-/**
- * Default user data
- */
-export const defaultUserData: StorageSchema["userData"] = {
-  lastVisit: Date.now(),
-  visitCount: 0,
-};
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
-/**
- * Initialize storage with default values if not set
- * Call this in background script on install
- */
-export async function initializeStorage(): Promise<void> {
-  const settings = await getStorage("settings");
-  if (!settings) {
-    await setStorage("settings", defaultSettings);
+export async function getRemainingAudits(): Promise<{ remaining: number; isFirstDay: boolean }> {
+  const usage = await getDailyUsage();
+  const today = todayStr();
+  const dailyLimit = 2;
+
+  if (!usage.firstEverDate) {
+    return { remaining: dailyLimit, isFirstDay: true };
   }
 
-  const userData = await getStorage("userData");
-  if (!userData) {
-    await setStorage("userData", defaultUserData);
+  const isFirstDay = usage.firstEverDate === today;
+
+  if (usage.date !== today) {
+    return { remaining: dailyLimit, isFirstDay };
+  }
+
+  return { remaining: Math.max(0, dailyLimit - usage.count), isFirstDay };
+}
+
+export async function recordLocalUse(): Promise<void> {
+  const usage = await getDailyUsage();
+  const today = todayStr();
+
+  if (usage.date !== today) {
+    await setDailyUsage({
+      date: today,
+      count: 1,
+      firstEverDate: usage.firstEverDate || today,
+    });
+  } else {
+    await setDailyUsage({ ...usage, count: usage.count + 1 });
+  }
+}
+
+// ── Initialize on install ──
+
+export async function initializeStorage(): Promise<void> {
+  const existing = await getExtensionId();
+  if (!existing) {
+    await setExtensionId(crypto.randomUUID());
   }
 }
